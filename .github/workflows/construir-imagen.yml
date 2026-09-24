@@ -170,16 +170,20 @@ jobs:
           # node_modules de la aplicacion. Lo que cuelga de /var/lang y de
           # /var/runtime no cuenta: son los arboles de npm y del runtime que
           # trae la imagen base de Lambda, y no se pueden quitar de ahi.
+          # El `|| true` no es cosmetico: grep termina en 1 cuando no encuentra
+          # nada, y el runner ejecuta este script con `bash -e`. Sin el, un
+          # Dockerfile bien corregido mata el paso aqui mismo, en silencio y
+          # antes de escribir la comprobacion 2.
           arboles="$(grep -E 'node_modules/' archivos.txt \
                      | sed -E 's#(node_modules/).*#\1#' \
                      | grep -vE '^(var/lang|var/runtime)/' \
-                     | sort -u)"
+                     | sort -u || true)"
 
           # Uso del gestor de paquetes del sistema en las capas de la imagen.
           # La imagen base no invoca ninguno, asi que cualquier coincidencia
           # sale de la etapa final del Dockerfile.
           gestor="$(docker history --no-trunc --format '{{.CreatedBy}}' "$imagen" \
-                    | grep -iE '(dnf|yum|microdnf|rpm|apt-get|apk)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(install|-i)')"
+                    | grep -iE '(dnf|yum|microdnf|rpm|apt-get|apk)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(install|-i)' || true)"
 
           if [ -n "$arboles" ] || [ -n "$gestor" ]; then
             falla=1
