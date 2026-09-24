@@ -6,4 +6,41 @@
 # a la imagen.
 #
 # Sintaxis: un patron por linea, con la misma forma que .gitignore.
-# TODO
+
+# Todo lo que no necesita llegar a la imagen queda fuera del contexto de build.
+
+# Control de versiones y CI
+.git
+.gitignore
+.github
+
+# Dependencias y artefactos locales (se regeneran dentro de la etapa build)
+node_modules
+dist
+coverage
+
+# Secretos y configuracion local
+.env
+.env.*
+*.pem
+*.key
+
+# Infraestructura y estado de Terraform
+infra
+*.tfstate
+*.tfstate.*
+tfplan
+tfplan.json
+
+# Pruebas, documentacion y configuracion que la imagen no usa
+test
+jest.config.js
+sonar-project.properties
+*.md
+*.ejemplo
+*.docx
+*.pdf
+
+# El propio archivo de build
+Dockerfile
+.dockerignore
