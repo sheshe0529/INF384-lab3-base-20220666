@@ -8,6 +8,6 @@
 # backend.hcl si se versiona: el pipeline de infraestructura lo lee en el
 # runner. El nombre de un bucket no es un secreto.
 
-bucket = "inf384-tfstate-<su-codigo-pucp>"
+bucket = "inf384-tfstate-20220666"
 key    = "lab3/terraform.tfstate"
 region = "us-east-1"
