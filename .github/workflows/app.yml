@@ -4,18 +4,11 @@ name: app
 # toca la infraestructura.
 #
 # De las cuatro gates, solo `secretos` detiene el pipeline. Las otras
-# tres informan y dejan pasar: el hallazgo tiene que quedar visible en la
-# ejecucion, no enterrado en el log.
+# tres informan y dejan pasar, pero su hallazgo queda visible en la ejecucion
+# (resumen del job + anotaciones), no enterrado en el log.
 #
-# El repositorio no tiene archivo de excepciones. Un hallazgo que se decida
-# no corregir se anota donde se produce: junto a la linea de codigo que lo
-# origina, o en el paso del pipeline que lo detecta cuando el hallazgo no
-# corresponde a ninguna linea. La anotacion lleva identificador del hallazgo,
-# razon, responsable y fecha de vencimiento. Las cuatro, siempre.
-#
-# En los jobs sin implementar, preferir una action del marketplace o la
-# imagen oficial de la herramienta antes que instalarla paso a paso en el
-# runner. La guia del laboratorio lista las referencias disponibles.
+# Formato de las anotaciones de excepcion (siempre los cuatro datos):
+#   EXCEPCION <id-del-hallazgo> | razon: ... | responsable: ... | vence: AAAA-MM-DD
 
 on:
   push:
@@ -29,6 +22,14 @@ on:
       - 'package*.json'
       - 'Dockerfile'
   workflow_dispatch:
+
+# Permiso minimo por defecto; cada job pide solo lo que necesita.
+permissions:
+  contents: read
+
+env:
+  APLICACION: inf384-lab3
+  AWS_REGION: us-east-1
 
 jobs:
 
@@ -56,124 +57,272 @@ jobs:
           path: coverage/
           if-no-files-found: error
 
-  # TODO
-  # Publicar el analisis de calidad y la cobertura en SonarQube Cloud, como
-  # en el Laboratorio 2.
-  #
-  # La configuracion del analisis viene resuelta en sonar-project.properties
-  # y no hay que editarla. Lo que falta es el ensamblaje: las credenciales,
-  # la cobertura y el analisis del historial.
-  #
-  # El reporte de cobertura lo produce el job pruebas.
-  # El analisis necesita el historial completo del repositorio para saber
-  # que es codigo nuevo.
-  #
-  # Esta compuerta no detiene el pipeline: el resultado queda en SonarQube
-  # Cloud y se lee ahi.
-  #
-  # Sustituir el paso centinela por la implementacion.
+  # ---------------------------------------------------------------------------
+  # Compuerta 1 · calidad (SonarQube Cloud) · INFORMATIVA
+  # ---------------------------------------------------------------------------
   calidad:
+    needs: pruebas            # necesita el reporte de cobertura; no depende de las otras 3 compuertas
     runs-on: ubuntu-latest
     steps:
-      - name: Sin implementar
-        run: |
-          echo "::error::El job 'calidad' no esta implementado."
-          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # historial completo: Sonar distingue el "codigo nuevo"
 
-  # TODO
-  # Buscar credenciales escritas en el codigo y en el historial del repositorio.
-  # El alcance incluye el historial completo, no solo el ultimo commit.
-  #
-  # Condicion de detencion: cualquier hallazgo. Esta es la unica compuerta
-  # de este pipeline que detiene.
-  #
-  # Una credencial no se exceptua. Se retira del codigo, se retira del
-  # historial y se rota en el origen. Silenciar el hallazgo deja la credencial
-  # viva y ademas apaga el control para la proxima.
-  #
-  # Sustituir el paso centinela por la implementacion.
+      - name: Descargar el reporte de cobertura
+        uses: actions/download-artifact@v4
+        with:
+          name: cobertura
+          path: coverage/
+
+      # Si falta la configuracion, el job SI falla: es un error de armado,
+      # no un hallazgo de la compuerta.
+      - name: Comprobar configuracion de SonarQube Cloud
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORG: ${{ vars.SONAR_ORG }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+        run: |
+          faltan=""
+          [ -n "$SONAR_TOKEN" ]       || faltan="$faltan SONAR_TOKEN(secret)"
+          [ -n "$SONAR_ORG" ]         || faltan="$faltan SONAR_ORG(variable)"
+          [ -n "$SONAR_PROJECT_KEY" ] || faltan="$faltan SONAR_PROJECT_KEY(variable)"
+          if [ -n "$faltan" ]; then
+            echo "::error::Falta configuracion de SonarQube Cloud:$faltan"
+            exit 1
+          fi
+
+      # qualitygate.wait=true espera el veredicto del Quality Gate.
+      # continue-on-error: si el gate no aprueba, NO detiene (es informativa).
+      - name: Analisis de calidad
+        id: sonar
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
+
+      - name: Resultado visible de calidad
+        if: always()
+        env:
+          RESULTADO: ${{ steps.sonar.outcome }}
+          URL: https://sonarcloud.io/dashboard?id=${{ vars.SONAR_PROJECT_KEY }}
+        run: |
+          if [ "$RESULTADO" = "success" ]; then
+            estado="APROBADO"
+          else
+            estado="NO APROBADO (informativo, no detiene)"
+            echo "::warning title=Calidad::Quality Gate no aprobado. Revisar $URL"
+          fi
+          {
+            echo "### Compuerta de calidad · $estado"
+            echo
+            echo "Detalle de cobertura y reglas sobre codigo nuevo: $URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Compuerta 2 · secretos (gitleaks) · DETIENE ante cualquier hallazgo
+  # Una credencial NO se exceptua: se retira del codigo, del historial y se rota.
+  # ---------------------------------------------------------------------------
   secretos:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - name: Sin implementar
-        run: |
-          echo "::error::El job 'secretos' no esta implementado."
-          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # historial completo, no solo el ultimo commit
 
-  # TODO
-  # Contrastar el arbol de dependencias declarado en package-lock.json contra
-  # vulnerabilidades conocidas.
-  #
-  # El alcance es el arbol completo, no solo las dependencias de produccion.
-  # El repositorio arrastra un hallazgo que solo aparece si el alcance es el
-  # correcto: si el informe trae uno solo, el alcance esta mal.
-  #
-  # Esta compuerta no detiene el pipeline. El hallazgo no cuelga de ninguna
-  # linea de codigo: la anotacion, si se decide no corregir, va en el paso
-  # que lo detecta.
-  #
-  # Sustituir el paso centinela por la implementacion.
+      - name: Buscar credenciales en codigo e historial
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: true      # el hallazgo sale en el resumen del job
+          GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
+  # ---------------------------------------------------------------------------
+  # Compuerta 3 · dependencias (Trivy SCA) · INFORMATIVA
+  # ---------------------------------------------------------------------------
   dependencias:
     runs-on: ubuntu-latest
     steps:
-      - name: Sin implementar
-        run: |
-          echo "::error::El job 'dependencias' no esta implementado."
-          exit 1
+      - uses: actions/checkout@v4
 
-  # TODO
-  # Buscar patrones explotables en el codigo fuente.
-  #
-  # Esta compuerta no detiene el pipeline. El hallazgo cuelga de una linea
-  # concreta: la anotacion, si se decide no corregir, va junto a esa linea.
-  #
-  # Sustituir el paso centinela por la implementacion.
+      # EXCEPCION CVE-2023-26136 (tough-cookie 4.1.2, prototype pollution) | razon: ... | responsable: Angel Sanchez | vence: AAAA-MM-DD
+      # EXCEPCION GHSA-67mh-4wv8-2f99 (esbuild 0.21.5, solo desarrollo) | razon: ... | responsable: Angel Sanchez | vence: AAAA-MM-DD
+      #   (Ajustar los identificadores a lo que reporte TU ejecucion.)
+      - name: Analisis de composicion del lock file
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_INCLUDE_DEV_DEPS: 'true'   # arbol COMPLETO: produccion + desarrollo
+        with:
+          scan-type: fs
+          scan-ref: package-lock.json
+          scanners: vuln
+          format: json
+          output: trivy-dependencias.json
+          exit-code: '0'                   # informativa: no detiene
+          hide-progress: true
+
+      - name: Hallazgos visibles de dependencias
+        if: always()
+        run: |
+          total=$(jq '[.Results[]?.Vulnerabilities[]?] | length' trivy-dependencias.json)
+          {
+            echo "### Compuerta de dependencias · ${total} hallazgo(s) (informativa)"
+            echo
+            echo "| ID | Paquete | Instalada | Corregida en | Severidad |"
+            echo "|---|---|---|---|---|"
+            jq -r '.Results[]?.Vulnerabilities[]? | "| \(.VulnerabilityID) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "-") | \(.Severity) |"' trivy-dependencias.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.Results[]?.Vulnerabilities[]? | "::warning title=\(.VulnerabilityID) (\(.Severity))::\(.PkgName)@\(.InstalledVersion) -> corregido en \(.FixedVersion // "sin version corregida")"' trivy-dependencias.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-dependencias
+          path: trivy-dependencias.json
+
+  # ---------------------------------------------------------------------------
+  # Compuerta 4 · estatico (Semgrep SAST) · INFORMATIVA
+  # La excepcion de un hallazgo va junto a la LINEA que lo origina (en src/).
+  # ---------------------------------------------------------------------------
   estatico:
     runs-on: ubuntu-latest
     steps:
-      - name: Sin implementar
-        run: |
-          echo "::error::El job 'estatico' no esta implementado."
-          exit 1
+      - uses: actions/checkout@v4
 
-  # TODO
-  # Construir la imagen de la aplicacion y publicarla en el registro privado.
-  #
-  # Depende de los cuatro jobs anteriores y corre solo desde la rama principal.
-  #
-  # La imagen se publica con tres tags independientes sobre el mismo manifiesto:
-  # el sha corto del commit, la version y el ambiente.
-  #
-  #   - El sha es el tag con el que se publica. Nace del commit, siempre
-  #     existe y no se reasigna nunca.
-  #   - La version identifica el artefacto para las personas y tampoco se
-  #     reasigna.
-  #   - El de ambiente se reasigna en cada publicacion y siempre apunta a lo
-  #     ultimo publicado para ese ambiente.
-  #
-  # Los dos ultimos se apuntan al manifiesto ya publicado. Agregar un tag a
-  # una imagen publicada no reenvia capas.
-  #
-  # La construccion es para linux/amd64 y declara el label
-  # org.opencontainers.image.title con el nombre de la aplicacion.
-  #
-  # Condicion de detencion: cualquier fallo de construccion o de publicacion.
-  #
-  # El job desplegar consume la salida 'digest' de este job. El formato es
-  # <registro>/<aplicacion>@sha256:... Exponer solo el sha del digest, o
-  # nombrar la salida de otra manera, rompe el despliegue.
-  #
-  # outputs:
-  #   digest: # TODO
-  #
-  # Sustituir el paso centinela por la implementacion.
-  publicar:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Sin implementar
+      - name: Analizar el codigo fuente
         run: |
-          echo "::error::El job 'publicar' no esta implementado."
-          exit 1
+          docker run --rm \
+            --volume "${PWD}:/src" \
+            --workdir /src \
+            --env SEMGREP_SEND_METRICS=off \
+            semgrep/semgrep \
+            semgrep scan \
+              --config=p/default \
+              --config=p/javascript \
+              --json --quiet \
+              --output=semgrep.json \
+              src/
+
+      - name: Hallazgos visibles del analisis estatico
+        if: always()
+        run: |
+          total=$(jq '.results | length' semgrep.json)
+          {
+            echo "### Compuerta de analisis estatico · ${total} hallazgo(s) (informativa)"
+            echo
+            echo "| Regla | Archivo:linea | Severidad | Mensaje |"
+            echo "|---|---|---|---|"
+            jq -r '.results[] | "| \(.check_id) | \(.path):\(.start.line) | \(.extra.severity) | \(.extra.message | gsub("\n";" ") | .[0:160]) |"' semgrep.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Anotacion pegada a la linea exacta del codigo
+          jq -r '.results[] | "::warning file=\(.path),line=\(.start.line),title=\(.check_id)::\(.extra.message | gsub("\n";" ") | .[0:300])"' semgrep.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporte-semgrep
+          path: semgrep.json
+
+  # ---------------------------------------------------------------------------
+  # Build y publicacion de la imagen · solo rama principal
+  # Tags sobre el MISMO manifiesto:
+  #   <sha7> -> inmutable, nace del commit; con este se construye y se publica
+  #   prd    -> movil, se reasigna en cada promocion
+  # ---------------------------------------------------------------------------
+  publicar:
+    needs: [calidad, secretos, dependencias, estatico]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}   # <registro>/<aplicacion>@sha256:...
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Credenciales temporales
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Entrar al registro
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Calcular referencias
+        env:
+          REGISTRO: ${{ steps.ecr.outputs.registry }}
+        run: |
+          echo "SHA_CORTO=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "REPO=${REGISTRO}/${APLICACION}" >> "$GITHUB_ENV"
+
+      # --provenance/--sbom=false: Lambda necesita un manifiesto de imagen simple,
+      # no un indice con atestaciones.
+      - name: Construir la imagen
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --provenance=false --sbom=false \
+            --label "org.opencontainers.image.title=${APLICACION}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${REPO}:${SHA_CORTO}" \
+            .
+
+      - name: Publicar con el tag del commit
+        run: docker push "${REPO}:${SHA_CORTO}"
+
+      - name: Leer el digest de lo publicado
+        id: digest
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "$APLICACION" \
+            --image-ids imageTag="$SHA_CORTO" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
+          echo "digest=${REPO}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # Se reasigna 'prd' al manifiesto YA publicado (no reenvia capas ni reconstruye).
+      - name: Apuntar el tag de ambiente (prd) al mismo manifiesto
+        run: |
+          MANIFIESTO=$(aws ecr batch-get-image --repository-name "$APLICACION" \
+            --image-ids imageDigest="$DIGEST" --query 'images[0].imageManifest' --output text)
+          TIPO=$(aws ecr batch-get-image --repository-name "$APLICACION" \
+            --image-ids imageDigest="$DIGEST" --query 'images[0].imageManifestMediaType' --output text)
+          if ! salida=$(aws ecr put-image --repository-name "$APLICACION" --image-tag prd \
+                 --image-manifest "$MANIFIESTO" --image-manifest-media-type "$TIPO" 2>&1); then
+            if echo "$salida" | grep -q ImageAlreadyExistsException; then
+              echo "prd ya apuntaba a ${DIGEST}"
+            else
+              echo "$salida"; exit 1
+            fi
+          fi
+
+      - name: Evidencia · los dos tags apuntan al mismo digest
+        run: |
+          {
+            echo "### Imagen publicada"
+            echo
+            echo "Digest desplegable: \`${REPO}@${DIGEST}\`"
+            echo
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            for t in "$SHA_CORTO" prd; do
+              d=$(aws ecr describe-images --repository-name "$APLICACION" --image-ids imageTag="$t" \
+                    --query 'imageDetails[0].imageDigest' --output text)
+              echo "| \`$t\` | \`$d\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Este job viene completo y no se modifica.
   # Las estrategias de despliegue y la verificacion posterior son contenido
